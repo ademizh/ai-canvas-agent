@@ -400,6 +400,8 @@ export async function POST(req: Request) {
       conversationHistory = [],
       persona = 'facilitator',
       contributionLevel = 'medium',
+      autonomous = false,
+    triggerReason = 'manual',
     } = body
 
     if (!openaiApiKey) {
@@ -410,7 +412,9 @@ export async function POST(req: Request) {
 
     const effectiveMessage =
       userMessage?.trim() ||
-      'No explicit instruction provided. Infer the most useful next board action from the workspace and conversation.'
+      (autonomous
+    ? 'Autonomously inspect the workspace and conversation, then make one helpful contribution on the canvas.'
+    : 'No explicit instruction provided. Infer the most useful next board action from the workspace and conversation.')
 
     const prompt = `
 Task:
@@ -419,6 +423,8 @@ You are helping with a live brainstorming board.
 mode: ${mode}
 persona: ${persona}
 contributionLevel: ${contributionLevel}
+autonomous: ${autonomous ? 'yes' : 'no'}
+triggerReason: ${triggerReason}
 
 User instruction:
 ${effectiveMessage}

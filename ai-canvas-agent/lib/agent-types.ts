@@ -91,6 +91,8 @@ export interface AgentRequestBody {
   conversationHistory?: ConversationMessage[]
   persona?: AgentPersona
   contributionLevel?: ContributionLevel
+  autonomous?: boolean
+  triggerReason?: string
 }
 
 export interface AgentResponseBody {

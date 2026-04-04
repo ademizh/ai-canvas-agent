@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AssetRecordType,
   createShapeId,
@@ -472,11 +472,11 @@ function applySectionLayout(
           x,
           y + 70 + (section.assigned.length + noteIndex) * noteGapY,
           note.color ||
-            (section.kind === 'risk'
-              ? 'red'
-              : section.kind === 'recommendation'
-                ? 'green'
-                : 'yellow')
+          (section.kind === 'risk'
+            ? 'red'
+            : section.kind === 'recommendation'
+              ? 'green'
+              : 'yellow')
         )
         helperShapeIds.push(stickyId)
       })
@@ -598,8 +598,55 @@ function formatTime(timestamp: number) {
   })
 }
 
+function conversationFingerprint(history: ConversationMessage[]) {
+  return history
+    .slice(-8)
+    .map((m) => `${m.role}:${m.text}`)
+    .join('|')
+}
+
+function chooseAutonomousMode(
+  canvasSummary: string,
+  conversationHistory: ConversationMessage[]
+): AgentMode {
+  const lower = canvasSummary.toLowerCase()
+  const historyText = conversationHistory
+    .slice(-6)
+    .map((m) => m.text.toLowerCase())
+    .join(' ')
+
+  const noteCount = canvasSummary === 'Board is empty.'
+    ? 0
+    : canvasSummary.split('\n').length
+
+  if (historyText.includes('visual') || historyText.includes('image') || historyText.includes('video')) {
+    return 'visualize'
+  }
+
+  if (noteCount >= 5) {
+    return 'cluster'
+  }
+
+  if (lower.includes('risk') || lower.includes('metric') || lower.includes('validation')) {
+    return 'critic'
+  }
+
+  if (noteCount === 0) {
+    return 'generate'
+  }
+
+  return 'suggest_next'
+}
+
 export default function Page() {
   const store = useSyncDemo({ roomId: ROOM_ID })
+
+  const [autonomousEnabled, setAutonomousEnabled] = useState(true)
+
+  const lastCanvasFingerprintRef = useRef('')
+  const lastConversationFingerprintRef = useRef('')
+  const lastAgentRunAtRef = useRef(0)
+  const lastObservedChangeAtRef = useRef(0)
 
   const [editor, setEditor] = useState<Editor | null>(null)
   const [prompt, setPrompt] = useState('')
@@ -658,18 +705,44 @@ export default function Page() {
     return 'AI is deciding the most useful next step…'
   }
 
-  async function runAgent(customMode?: AgentMode) {
+  async function runAgent(
+    customMode?: AgentMode,
+    options?: {
+      autonomous?: boolean
+      injectedMessage?: string
+      silentUser?: boolean
+      triggerReason?: string
+    }
+  ) {
     if (!editor || loading || paused) return
 
     const effectiveMode = customMode || mode
-    const userText = prompt.trim() || defaultMessageForMode(effectiveMode)
+    const autonomous = options?.autonomous ?? false
+    const userText =
+      options?.injectedMessage?.trim() ||
+      prompt.trim() ||
+      defaultMessageForMode(effectiveMode)
 
-    pushConversation('user', userText)
+    if (!options?.silentUser) {
+      pushConversation('user', userText)
+    }
+
     setLoading(true)
-    setStatus(statusForMode(effectiveMode))
+    setStatus(
+      autonomous
+        ? 'AI noticed activity and is contributing on its own…'
+        : statusForMode(effectiveMode)
+    )
 
     try {
       const canvasSummary = summarizeBoard(editor)
+
+      const outgoingConversation = options?.silentUser
+        ? conversationHistory.slice(-19)
+        : [
+          ...conversationHistory.slice(-19),
+          { role: 'user' as const, text: userText, timestamp: Date.now() },
+        ]
 
       const res = await fetch('/api/agent', {
         method: 'POST',
@@ -678,12 +751,11 @@ export default function Page() {
           userMessage: userText,
           mode: effectiveMode,
           canvasSummary,
-          conversationHistory: [
-            ...conversationHistory.slice(-19),
-            { role: 'user', text: userText, timestamp: Date.now() },
-          ],
+          conversationHistory: outgoingConversation,
           persona,
           contributionLevel,
+          autonomous,
+          triggerReason: options?.triggerReason || (autonomous ? 'idle_board_change' : 'manual'),
         }),
       })
 
@@ -704,6 +776,7 @@ export default function Page() {
 
       setStatus(data.summary || 'Done')
       pushConversation('agent', data.summary || 'Agent acted on the board.')
+      lastAgentRunAtRef.current = Date.now()
     } catch (error) {
       console.error(error)
       setStatus('Something went wrong. Check console and /api/agent logs.')
@@ -712,6 +785,51 @@ export default function Page() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!editor || !autonomousEnabled || paused) return
+
+    const interval = window.setInterval(() => {
+      if (loading) return
+
+      const canvas = summarizeBoard(editor)
+      const convo = conversationFingerprint(conversationHistory)
+
+      const canvasChanged = canvas !== lastCanvasFingerprintRef.current
+      const convoChanged = convo !== lastConversationFingerprintRef.current
+
+      if (canvasChanged || convoChanged) {
+        lastCanvasFingerprintRef.current = canvas
+        lastConversationFingerprintRef.current = convo
+        lastObservedChangeAtRef.current = Date.now()
+        return
+      }
+
+      const now = Date.now()
+      const idleForMs = now - lastObservedChangeAtRef.current
+      const sinceLastRunMs = now - lastAgentRunAtRef.current
+
+      const boardIsNonEmpty = canvas !== 'Board is empty.'
+
+      if (
+        boardIsNonEmpty &&
+        idleForMs > 8000 &&
+        sinceLastRunMs > 20000
+      ) {
+        const autoMode = chooseAutonomousMode(canvas, conversationHistory)
+
+        void runAgent(autoMode, {
+          autonomous: true,
+          silentUser: true,
+          injectedMessage:
+            'Inspect the current canvas and conversation. Contribute as an active teammate by making the single most useful improvement directly on the board.',
+          triggerReason: 'board_idle_after_change',
+        })
+      }
+    }, 2500)
+
+    return () => window.clearInterval(interval)
+  }, [editor, autonomousEnabled, paused, loading, conversationHistory, persona, contributionLevel, helperShapeIds])
 
   async function generateMediaOnCanvas() {
     if (!editor || loading) return
@@ -961,6 +1079,13 @@ export default function Page() {
           </button>
 
           <button
+            onClick={() => setAutonomousEnabled((v) => !v)}
+            style={buttonStyle(autonomousEnabled ? '#1d4ed8' : '#6b7280')}
+          >
+            {autonomousEnabled ? 'Autonomy on' : 'Autonomy off'}
+          </button>
+
+          <button
             onClick={clearConversation}
             style={buttonStyle('#6b7280')}
           >
@@ -977,6 +1102,10 @@ export default function Page() {
           }}
         >
           <strong>Status:</strong> {loading ? 'Working…' : status}
+        </div>
+
+        <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+          Autonomous participant: <strong>{autonomousEnabled ? 'enabled' : 'disabled'}</strong>
         </div>
 
         <div
