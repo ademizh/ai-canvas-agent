@@ -1,5 +1,6 @@
 'use client'
 
+import 'tldraw/tldraw.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AssetRecordType,
@@ -10,7 +11,7 @@ import {
   TLShape,
   toRichText,
 } from 'tldraw'
-import { useSyncDemo } from '@tldraw/sync'
+
 import type {
   AgentAction,
   AgentMode,
@@ -22,7 +23,7 @@ import type {
   SessionEvent,
 } from '@/lib/agent-types'
 
-const ROOM_ID = process.env.NEXT_PUBLIC_ROOM_ID || 'hacknu-ai-agent-room'
+// const ROOM_ID = process.env.NEXT_PUBLIC_ROOM_ID || 'hacknu-ai-agent-room'
 
 type SectionPlan = {
   sectionId: string
@@ -312,12 +313,13 @@ async function requestGeneratedMedia(
   prompt: string,
   x: number,
   y: number,
-  title?: string
+  title?: string,
+  imageUrl?: string
 ) {
   const res = await fetch('/api/generate-media', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind, prompt }),
+    body: JSON.stringify({ kind, prompt, imageUrl }),
   })
 
   let data: { url?: string; error?: string } = {}
@@ -591,6 +593,7 @@ async function applyNonSectionAction(editor: Editor, action: AgentAction) {
     return
   }
 }
+
 async function applyAgentActions(
   editor: Editor,
   actions: AgentAction[],
@@ -683,8 +686,8 @@ function countRecentUserCreatedNotes(editor: Editor) {
   return shapes.filter((shape) => shape.type === 'note').length
 }
 export default function Page() {
-  const store = useSyncDemo({ roomId: ROOM_ID })
-
+  //const store = useSyncDemo({ roomId: ROOM_ID })
+  const licenseKey = process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY
   const [autonomousEnabled, setAutonomousEnabled] = useState(false)
   const [showAgentPanel, setShowAgentPanel] = useState(true)
   const [showSessionPanel, setShowSessionPanel] = useState(true)
@@ -1182,7 +1185,47 @@ function sendSessionTextMessage() {
       setLoading(false)
     }
   }
+async function animateSelectedImageOnCanvas() {
+  if (!editor || loading || isTranscribing) return
 
+  const imageUrl = getSelectedImageUrl(editor)
+
+  if (!imageUrl) {
+    setStatus('Select an image on the canvas first.')
+    return
+  }
+
+  const prompt =
+    buildEffectiveUserText(mode).trim() ||
+    'Animate this image with subtle cinematic motion.'
+
+  const selectedShapes = editor.getSelectedShapes()
+  const selected = selectedShapes.find((shape) => shape.type === 'image')
+
+  const x = selected ? selected.x + 680 : 300
+  const y = selected ? selected.y : 300
+
+  setLoading(true)
+  setStatus('Generating video from selected image…')
+
+  try {
+    await requestGeneratedMedia(
+      editor,
+      'video',
+      prompt,
+      x,
+      y,
+      'Animated from selected image',
+      imageUrl
+    )
+    setStatus('Image-to-video added to the canvas.')
+  } catch (error) {
+    console.error(error)
+    setStatus('Image-to-video generation failed.')
+  } finally {
+    setLoading(false)
+  }
+}
   function seedManualExample() {
     if (!editor) return
 
@@ -1558,6 +1601,25 @@ return (
             style={buttonStyle('#0f766e')}
           >
             Generate on canvas
+            
+          </button>
+          <button
+            onClick={animateSelectedImageOnCanvas}
+            disabled={!canRun}
+            style={{
+              marginTop: 10,
+              width: '100%',
+              padding: '12px 14px',
+              borderRadius: 14,
+              border: 'none',
+              background: '#1f2937',
+              color: 'white',
+              fontWeight: 700,
+              cursor: canRun ? 'pointer' : 'not-allowed',
+              opacity: canRun ? 1 : 0.6,
+            }}
+          >
+            Animate selected image
           </button>
         </div>
 
@@ -1657,7 +1719,8 @@ return (
     </div>
 
     <Tldraw
-      store={store}
+      licenseKey={licenseKey}
+      persistenceKey="ai-canvas-agent"
       onMount={(editorInstance) => {
         setEditor(editorInstance)
       }}
@@ -1711,6 +1774,25 @@ function miniButtonStyle(background: string): React.CSSProperties {
     fontWeight: 600,
     fontSize: 12,
   }
+}
+function getSelectedImageUrl(editor: Editor): string | undefined {
+  const selectedShapes = editor.getSelectedShapes()
+
+  for (const shape of selectedShapes) {
+    if (shape.type !== 'image') continue
+
+    const assetId = (shape as any).props?.assetId
+    if (!assetId) continue
+
+    const asset = editor.getAsset(assetId as any) as any
+    const src = asset?.props?.src
+
+    if (typeof src === 'string' && src.trim()) {
+      return src
+    }
+  }
+
+  return undefined
 }
 function normalizeTldrawColor(
   color?: string

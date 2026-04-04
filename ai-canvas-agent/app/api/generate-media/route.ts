@@ -6,10 +6,16 @@ import {
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as { kind?: string; prompt?: string }
+    const body = (await req.json()) as {
+      kind?: string
+      prompt?: string
+      imageUrl?: string
+    }
 
     const kind = body.kind as GenerateMediaKind | undefined
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
+    const imageUrl =
+      typeof body.imageUrl === 'string' ? body.imageUrl.trim() : ''
 
     if (kind !== 'image' && kind !== 'video') {
       return NextResponse.json(
@@ -38,8 +44,13 @@ export async function POST(req: Request) {
       )
     }
 
-    const { url } = await generateMediaUrl(kind, prompt)
-    return NextResponse.json({ url, kind })
+    const { url } = await generateMediaUrl(kind, prompt, imageUrl || undefined)
+
+    return NextResponse.json({
+      url,
+      kind,
+      mode: kind === 'video' && imageUrl ? 'image-to-video' : `text-to-${kind}`,
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     console.error('[generate-media]', message)
