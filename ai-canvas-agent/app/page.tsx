@@ -685,8 +685,10 @@ function countRecentUserCreatedNotes(editor: Editor) {
 export default function Page() {
   const store = useSyncDemo({ roomId: ROOM_ID })
 
-  const [autonomousEnabled, setAutonomousEnabled] = useState(true)
-
+  const [autonomousEnabled, setAutonomousEnabled] = useState(false)
+  const [showAgentPanel, setShowAgentPanel] = useState(true)
+  const [showSessionPanel, setShowSessionPanel] = useState(true)
+  
   const lastCanvasFingerprintRef = useRef('')
   const lastConversationFingerprintRef = useRef('')
   const lastAgentRunAtRef = useRef(0)
@@ -710,9 +712,10 @@ export default function Page() {
   const [conversationHistory, setConversationHistory] = useState<
     ConversationMessage[]
   >([])
+  const [sessionMessage, setSessionMessage] = useState('')
   const [sessionEvents, setSessionEvents] = useState<SessionEvent[]>([])
   const [agentPresence, setAgentPresence] = useState('observing canvas')
-  const [sessionMessage, setSessionMessage] = useState('')
+  
   const [recentUserNoteBursts, setRecentUserNoteBursts] = useState<number[]>([])
   const [helperShapeIds, setHelperShapeIds] = useState<string[]>([])
   const [mediaKind, setMediaKind] = useState<'image' | 'video'>('image')
@@ -736,14 +739,33 @@ export default function Page() {
       },
     ])
   }
-  function sendSessionTextMessage() {
-    const text = sessionMessage.trim()
-    if (!text) return
+  function pushSessionEvent(
+  kind: SessionEvent['kind'],
+  author: SessionEvent['author'],
+  text: string
+) {
+  setSessionEvents((prev) => [
+    ...prev.slice(-39),
+    {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind,
+      author,
+      text,
+      timestamp: Date.now(),
+    },
+  ])
+}
 
-    pushConversation('user', text)
-    pushSessionEvent('user_text', 'user', text)
-    setSessionMessage('')
-  }
+function sendSessionTextMessage() {
+  const text = sessionMessage.trim()
+  if (!text) return
+
+  pushConversation('user', text)
+  pushSessionEvent('user_text', 'user', text)
+  setPrompt(text)
+  setSessionMessage('')
+}
+
 
   function commitVoiceToSession() {
     const text = voiceText.trim()
@@ -751,22 +773,6 @@ export default function Page() {
 
     pushConversation('user', text)
     pushSessionEvent('user_voice', 'user', text)
-  }
-    function pushSessionEvent(
-    kind: SessionEvent['kind'],
-    author: SessionEvent['author'],
-    text: string
-  ) {
-    setSessionEvents((prev) => [
-      ...prev.slice(-39),
-      {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        kind,
-        author,
-        text,
-        timestamp: Date.now(),
-      },
-    ])
   }
   function defaultMessageForMode(selectedMode: AgentMode) {
     if (selectedMode === 'generate') {
@@ -1231,16 +1237,16 @@ export default function Page() {
   function clearConversation() {
     setConversationHistory([])
   }
-
-  return (
-    <div style={{ position: 'fixed', inset: 0 }}>
+return (
+  <div style={{ position: 'fixed', inset: 0 }}>
+    {showSessionPanel && (
       <div
         style={{
           position: 'absolute',
           top: 16,
           left: 16,
           zIndex: 100,
-          width: 470,
+          width: 420,
           maxHeight: '92vh',
           overflow: 'auto',
           background: 'rgba(255,255,255,0.97)',
@@ -1250,37 +1256,42 @@ export default function Page() {
           boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
         }}
       >
-        <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 8 }}>
-          AI Canvas Agent
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: 8,
+          }}
+        >
+          <div style={{ fontWeight: 700, fontSize: 18 }}>
+            Session
+          </div>
+
+          <button
+            onClick={() => setShowSessionPanel(false)}
+            style={miniButtonStyle('#6b7280')}
+          >
+            Hide
+          </button>
         </div>
 
         <div style={{ fontSize: 12, color: '#555', marginBottom: 12 }}>
-          Room: <strong>{ROOM_ID}</strong>
+          Shared text + voice layer for users and AI
         </div>
-        <div
-          style={{
-            fontSize: 12,
-            color: '#444',
-            marginBottom: 10,
-            padding: '8px 10px',
-            borderRadius: 10,
-            background: '#f8fafc',
-            border: '1px solid #e5e7eb',
-          }}
-        >
-          <strong>AI status:</strong> {agentPresence}
-        </div>
-        <label style={labelStyle}>Session message / agent prompt</label>
+
+        <label style={labelStyle}>Session message</label>
         <textarea
           value={sessionMessage}
           onChange={(e) => {
             setSessionMessage(e.target.value)
             setPrompt(e.target.value)
           }}
-          placeholder="Optional. Leave empty and let the agent infer the next helpful step."
-          rows={4}
+          placeholder="Write a message to the session..."
+          rows={3}
           style={textareaStyle}
         />
+
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
           <button
             onClick={sendSessionTextMessage}
@@ -1290,6 +1301,7 @@ export default function Page() {
             Send to session
           </button>
         </div>
+
         <div
           style={{
             display: 'grid',
@@ -1330,18 +1342,6 @@ export default function Page() {
           </button>
         </div>
 
-        <div
-          style={{
-            fontSize: 12,
-            color: '#666',
-            marginTop: -6,
-            marginBottom: 12,
-            lineHeight: 1.4,
-          }}
-        >
-          Better for the brief: users can guide the AI with text, voice, or both, while the agent stays grounded in the canvas and conversation.
-        </div>
-
         <label style={labelStyle}>Voice transcript</label>
         <textarea
           value={voiceText}
@@ -1363,14 +1363,128 @@ export default function Page() {
 
         <div
           style={{
+            fontSize: 12,
+            color: '#444',
+            marginBottom: 10,
+            padding: '8px 10px',
+            borderRadius: 10,
+            background: '#f8fafc',
+            border: '1px solid #e5e7eb',
+          }}
+        >
+          <strong>AI status:</strong> {agentPresence}
+        </div>
+
+        <div
+          style={{
+            borderTop: '1px solid #eee',
+            paddingTop: 12,
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>
+            Session conversation
+          </div>
+
+          {sessionEvents.length === 0 ? (
+            <div style={{ fontSize: 13, color: '#666' }}>
+              No session messages yet.
+            </div>
+          ) : (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                maxHeight: 260,
+                overflow: 'auto',
+              }}
+            >
+              {sessionEvents.map((event) => (
+                <div
+                  key={event.id}
+                  style={{
+                    padding: 10,
+                    borderRadius: 12,
+                    background: event.author === 'user' ? '#f3f4f6' : '#eefaf6',
+                    border:
+                      event.author === 'user'
+                        ? '1px solid #e5e7eb'
+                        : '1px solid #ccefe2',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                      color: '#666',
+                      marginBottom: 4,
+                    }}
+                  >
+                    {event.kind.replace('_', ' ')} • {formatTime(event.timestamp)}
+                  </div>
+                  <div style={{ fontSize: 13, lineHeight: 1.45 }}>
+                    {event.text}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    {showAgentPanel && (
+      <div
+        style={{
+          position: 'absolute',
+          top: 16,
+          left: 460,
+          zIndex: 100,
+          width: 360,
+          maxHeight: '92vh',
+          overflow: 'auto',
+          background: 'rgba(255,255,255,0.97)',
+          border: '1px solid #ddd',
+          borderRadius: 16,
+          padding: 16,
+          boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: 8,
+          }}
+        >
+          <div style={{ fontWeight: 700, fontSize: 18 }}>
+            Agent controls
+          </div>
+
+          <button
+            onClick={() => setShowAgentPanel(false)}
+            style={miniButtonStyle('#6b7280')}
+          >
+            Hide
+          </button>
+        </div>
+
+        <div style={{ fontSize: 12, color: '#555', marginBottom: 12 }}>
+          Focus, control, and direct the AI participant
+        </div>
+
+        <div
+          style={{
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
+            gridTemplateColumns: '1fr',
             gap: 10,
             marginBottom: 12,
           }}
         >
           <div>
-            <label style={labelStyle}>Mode</label>
+            <label style={labelStyle}>Focus</label>
             <select
               value={mode}
               onChange={(e) => setMode(e.target.value as AgentMode)}
@@ -1397,8 +1511,8 @@ export default function Page() {
             </select>
           </div>
 
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label style={labelStyle}>Contribution level</label>
+          <div>
+            <label style={labelStyle}>Contribution amount</label>
             <select
               value={contributionLevel}
               onChange={(e) =>
@@ -1419,7 +1533,7 @@ export default function Page() {
             alignItems: 'center',
             gap: 8,
             flexWrap: 'wrap',
-            marginBottom: 10,
+            marginBottom: 12,
           }}
         >
           <span style={{ fontSize: 12, color: '#555' }}>Canvas media:</span>
@@ -1505,77 +1619,51 @@ export default function Page() {
           <strong>Status:</strong> {loading ? 'Working…' : status}
         </div>
 
-        <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: '#666' }}>
           Autonomous participant: <strong>{autonomousEnabled ? 'enabled' : 'disabled'}</strong>
         </div>
-
-        <div
-          style={{
-            borderTop: '1px solid #eee',
-            paddingTop: 12,
-          }}
-        >
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>
-            Session conversation
-          </div>
-
-          {sessionEvents.length === 0 ? (
-            <div style={{ fontSize: 13, color: '#666' }}>
-              No session messages yet.
-            </div>
-          ) : (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-                maxHeight: 260,
-                overflow: 'auto',
-              }}
-            >
-              {sessionEvents.map((event) => (
-                <div
-                  key={event.id}
-                  style={{
-                    padding: 10,
-                    borderRadius: 12,
-                    background: event.author === 'user' ? '#f3f4f6' : '#eefaf6',
-                    border:
-                      event.author === 'user'
-                        ? '1px solid #e5e7eb'
-                        : '1px solid #ccefe2',
-                  }}
-                >
-                  <div
-                    style={{
-                      fontSize: 11,
-                      fontWeight: 700,
-                      textTransform: 'uppercase',
-                      color: '#666',
-                      marginBottom: 4,
-                    }}
-                  >
-                    {event.kind.replace('_', ' ')} • {formatTime(event.timestamp)}
-                  </div>
-                  <div style={{ fontSize: 13, lineHeight: 1.45 }}>
-                    {event.text}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
       </div>
+    )}
 
-      <Tldraw
-        store={store}
-        onMount={(editorInstance) => {
-          setEditor(editorInstance)
-        }}
-      />
+   
+        <div
+      style={{
+        position: 'absolute',
+        left: 16,
+        bottom: 24,
+        zIndex: 101,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}
+    >
+      {!showSessionPanel && (
+        <button
+          onClick={() => setShowSessionPanel(true)}
+          style={miniButtonStyle('#111')}
+        >
+          Open session
+        </button>
+      )}
+
+      {!showAgentPanel && (
+        <button
+          onClick={() => setShowAgentPanel(true)}
+          style={miniButtonStyle('#111')}
+        >
+          Open agent controls
+        </button>
+      )}
     </div>
-  )
-}
+
+    <Tldraw
+      store={store}
+      onMount={(editorInstance) => {
+        setEditor(editorInstance)
+      }}
+    />
+  </div>
+)}
 const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: 12,
@@ -1612,7 +1700,18 @@ function buttonStyle(background: string): React.CSSProperties {
     fontWeight: 600,
   }
 }
-
+function miniButtonStyle(background: string): React.CSSProperties {
+  return {
+    background,
+    color: 'white',
+    border: 'none',
+    borderRadius: 10,
+    padding: '6px 10px',
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontSize: 12,
+  }
+}
 function normalizeTldrawColor(
   color?: string
 ):
