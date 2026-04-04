@@ -472,11 +472,11 @@ function applySectionLayout(
           x,
           y + 70 + (section.assigned.length + noteIndex) * noteGapY,
           note.color ||
-          (section.kind === 'risk'
-            ? 'red'
-            : section.kind === 'recommendation'
-              ? 'green'
-              : 'yellow')
+            (section.kind === 'risk'
+              ? 'red'
+              : section.kind === 'recommendation'
+                ? 'green'
+                : 'yellow')
         )
         helperShapeIds.push(stickyId)
       })
@@ -650,9 +650,13 @@ export default function Page() {
 
   const [editor, setEditor] = useState<Editor | null>(null)
   const [prompt, setPrompt] = useState('')
+  const [voiceText, setVoiceText] = useState('')
   const [status, setStatus] = useState('Ready')
   const [loading, setLoading] = useState(false)
   const [paused, setPaused] = useState(false)
+  const [inputMode, setInputMode] = useState<'text' | 'voice' | 'both'>('both')
+  const [isRecording, setIsRecording] = useState(false)
+  const [isTranscribing, setIsTranscribing] = useState(false)
 
   const [persona, setPersona] = useState<AgentPersona>('facilitator')
   const [contributionLevel, setContributionLevel] =
@@ -665,9 +669,13 @@ export default function Page() {
   const [helperShapeIds, setHelperShapeIds] = useState<string[]>([])
   const [mediaKind, setMediaKind] = useState<'image' | 'video'>('image')
 
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const mediaStreamRef = useRef<MediaStream | null>(null)
+  const mediaChunksRef = useRef<Blob[]>([])
+
   const canRun = useMemo(
-    () => !!editor && !loading && !paused,
-    [editor, loading, paused]
+    () => !!editor && !loading && !paused && !isTranscribing,
+    [editor, loading, paused, isTranscribing]
   )
 
   function pushConversation(role: 'user' | 'agent', text: string) {
@@ -705,6 +713,155 @@ export default function Page() {
     return 'AI is deciding the most useful next step…'
   }
 
+  function getPreferredAudioMimeType() {
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/ogg;codecs=opus',
+    ]
+
+    for (const type of candidates) {
+      if (
+        typeof MediaRecorder !== 'undefined' &&
+        typeof MediaRecorder.isTypeSupported === 'function' &&
+        MediaRecorder.isTypeSupported(type)
+      ) {
+        return type
+      }
+    }
+
+    return ''
+  }
+
+  async function transcribeAudioBlob(blob: Blob) {
+    const ext =
+      blob.type.includes('mp4')
+        ? 'm4a'
+        : blob.type.includes('ogg')
+          ? 'ogg'
+          : 'webm'
+
+    const file = new File([blob], `voice-input.${ext}`, {
+      type: blob.type || 'audio/webm',
+    })
+
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append(
+      'prompt',
+      'Expect brainstorming, product ideas, canvas collaboration, sticky notes, design discussion, AI agent.'
+    )
+
+    const res = await fetch('/api/transcribe', {
+      method: 'POST',
+      body: formData,
+    })
+
+    const data = (await res.json()) as { text?: string; error?: string }
+
+    if (!res.ok) {
+      throw new Error(data.error || `Transcription failed with ${res.status}`)
+    }
+
+    return (data.text || '').trim()
+  }
+
+  async function startRecording() {
+    if (isRecording || isTranscribing || loading) return
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaStreamRef.current = stream
+      mediaChunksRef.current = []
+
+      const mimeType = getPreferredAudioMimeType()
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream)
+
+      mediaRecorderRef.current = recorder
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          mediaChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onstop = async () => {
+        try {
+          const blob = new Blob(mediaChunksRef.current, {
+            type: recorder.mimeType || 'audio/webm',
+          })
+
+          if (!blob.size) {
+            setStatus('No audio recorded.')
+            return
+          }
+
+          setIsTranscribing(true)
+          setStatus('Transcribing voice…')
+
+          const text = await transcribeAudioBlob(blob)
+          setVoiceText(text)
+          setStatus(text ? 'Voice transcript ready.' : 'No speech detected.')
+        } catch (error) {
+          console.error(error)
+          setStatus('Voice transcription failed.')
+        } finally {
+          setIsRecording(false)
+          setIsTranscribing(false)
+          mediaRecorderRef.current = null
+          mediaChunksRef.current = []
+
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach((track) => track.stop())
+            mediaStreamRef.current = null
+          }
+        }
+      }
+
+      recorder.start()
+      setIsRecording(true)
+      setStatus('Recording voice…')
+    } catch (error) {
+      console.error(error)
+      setIsRecording(false)
+      setStatus('Microphone access failed.')
+    }
+  }
+
+  function stopRecording() {
+    if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') {
+      return
+    }
+
+    mediaRecorderRef.current.stop()
+  }
+
+  function clearVoiceText() {
+    setVoiceText('')
+  }
+
+  function buildEffectiveUserText(selectedMode: AgentMode) {
+    const textPart = prompt.trim()
+    const voicePart = voiceText.trim()
+
+    if (inputMode === 'text') {
+      return textPart || defaultMessageForMode(selectedMode)
+    }
+
+    if (inputMode === 'voice') {
+      return voicePart || defaultMessageForMode(selectedMode)
+    }
+
+    if (textPart && voicePart) {
+      return `Text input:\n${textPart}\n\nVoice input:\n${voicePart}`
+    }
+
+    return textPart || voicePart || defaultMessageForMode(selectedMode)
+  }
+
   async function runAgent(
     customMode?: AgentMode,
     options?: {
@@ -714,14 +871,13 @@ export default function Page() {
       triggerReason?: string
     }
   ) {
-    if (!editor || loading || paused) return
+    if (!editor || loading || paused || isTranscribing) return
 
     const effectiveMode = customMode || mode
     const autonomous = options?.autonomous ?? false
     const userText =
       options?.injectedMessage?.trim() ||
-      prompt.trim() ||
-      defaultMessageForMode(effectiveMode)
+      buildEffectiveUserText(effectiveMode)
 
     if (!options?.silentUser) {
       pushConversation('user', userText)
@@ -790,7 +946,7 @@ export default function Page() {
     if (!editor || !autonomousEnabled || paused) return
 
     const interval = window.setInterval(() => {
-      if (loading) return
+      if (loading || isRecording || isTranscribing) return
 
       const canvas = summarizeBoard(editor)
       const convo = conversationFingerprint(conversationHistory)
@@ -829,17 +985,28 @@ export default function Page() {
     }, 2500)
 
     return () => window.clearInterval(interval)
-  }, [editor, autonomousEnabled, paused, loading, conversationHistory, persona, contributionLevel, helperShapeIds])
+  }, [
+    editor,
+    autonomousEnabled,
+    paused,
+    loading,
+    isRecording,
+    isTranscribing,
+    conversationHistory,
+    persona,
+    contributionLevel,
+    helperShapeIds,
+  ])
 
   async function generateMediaOnCanvas() {
-    if (!editor || loading) return
+    if (!editor || loading || isTranscribing) return
 
     const fallback =
       mediaKind === 'image'
         ? 'A futuristic collaborative whiteboard with sticky notes and soft studio lighting.'
         : 'Short clip: hands arranging sticky notes on a glass whiteboard, smooth camera pan.'
 
-    const text = prompt.trim() || fallback
+    const text = buildEffectiveUserText(mode).trim() || fallback
     const vp = editor.getViewportPageBounds()
     const x = vp.x + vp.width / 2 - DEFAULT_MEDIA_W / 2
     const y = vp.y + vp.height / 2 - DEFAULT_MEDIA_H / 2
@@ -950,6 +1117,46 @@ export default function Page() {
 
         <div
           style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 10,
+            marginBottom: 12,
+          }}
+        >
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label style={labelStyle}>Input mode</label>
+            <select
+              value={inputMode}
+              onChange={(e) =>
+                setInputMode(e.target.value as 'text' | 'voice' | 'both')
+              }
+              style={selectStyle}
+            >
+              <option value="text">Text</option>
+              <option value="voice">Voice</option>
+              <option value="both">Text + Voice</option>
+            </select>
+          </div>
+
+          <button
+            onClick={() => void startRecording()}
+            disabled={isRecording || isTranscribing || loading}
+            style={buttonStyle('#0f766e')}
+          >
+            {isRecording ? 'Recording…' : 'Start voice'}
+          </button>
+
+          <button
+            onClick={stopRecording}
+            disabled={!isRecording}
+            style={buttonStyle('#b42318')}
+          >
+            Stop voice
+          </button>
+        </div>
+
+        <div
+          style={{
             fontSize: 12,
             color: '#666',
             marginTop: -6,
@@ -957,7 +1164,26 @@ export default function Page() {
             lineHeight: 1.4,
           }}
         >
-          Better for the brief: users can guide the AI, but the AI can also understand the board and suggest its own next move.
+          Better for the brief: users can guide the AI with text, voice, or both, while the agent stays grounded in the canvas and conversation.
+        </div>
+
+        <label style={labelStyle}>Voice transcript</label>
+        <textarea
+          value={voiceText}
+          onChange={(e) => setVoiceText(e.target.value)}
+          placeholder="Your recorded voice will appear here."
+          rows={3}
+          style={textareaStyle}
+        />
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <button
+            onClick={clearVoiceText}
+            disabled={!voiceText}
+            style={buttonStyle('#6b7280')}
+          >
+            Clear voice
+          </button>
         </div>
 
         <div
@@ -1039,7 +1265,7 @@ export default function Page() {
 
           <button
             onClick={() => void generateMediaOnCanvas()}
-            disabled={!editor || loading}
+            disabled={!editor || loading || isTranscribing}
             style={buttonStyle('#0f766e')}
           >
             Generate on canvas
@@ -1065,7 +1291,7 @@ export default function Page() {
 
           <button
             onClick={seedManualExample}
-            disabled={!editor || loading}
+            disabled={!editor || loading || isTranscribing}
             style={buttonStyle('#444')}
           >
             Seed notes
