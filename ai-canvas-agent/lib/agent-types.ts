@@ -98,4 +98,12 @@ export interface AgentRequestBody {
 export interface AgentResponseBody {
   summary: string
   actions: AgentAction[]
+  sessionEvents?: SessionEvent[]
+}
+export type SessionEvent = {
+  id: string
+  kind: 'user_text' | 'user_voice' | 'agent_observation' | 'agent_action'
+  author: 'user' | 'agent'
+  text: string
+  timestamp: number
 }

@@ -96,6 +96,9 @@ Your job:
 - understand the conversation
 - make the board clearer, more structured, and more useful
 - act like a thoughtful teammate already in the session
+- Use conversationHistory as a shared session layer.
+- Make placement feel intentional and spatially aware.
+- If autonomous is yes, act like an active teammate who noticed an opportunity.
 The goal is to make it meaningfully better.
 
 Return ONLY valid JSON:
@@ -204,6 +207,11 @@ Rules:
 - Do not duplicate content.
 - Make the board easier to scan and understand in a few seconds.
 - Use section names that match the real board content.
+- Treat recent conversation as a shared live session between users and the agent, not as isolated prompts.
+- When users mention visuals, show, mockup, image, or video, prefer visualize behavior.
+- When many notes accumulate, prefer clustering and structure over adding more notes.
+- Place media near the section it supports.
+- Use the canvas as spatial memory.
 
 Never output colors:
 pink, purple, gray
@@ -401,7 +409,7 @@ export async function POST(req: Request) {
       persona = 'facilitator',
       contributionLevel = 'medium',
       autonomous = false,
-    triggerReason = 'manual',
+      triggerReason = 'manual',
     } = body
 
     if (!openaiApiKey) {

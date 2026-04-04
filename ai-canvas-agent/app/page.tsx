@@ -19,6 +19,7 @@ import type {
   ContributionLevel,
   ConversationMessage,
   SectionKind,
+  SessionEvent,
 } from '@/lib/agent-types'
 
 const ROOM_ID = process.env.NEXT_PUBLIC_ROOM_ID || 'hacknu-ai-agent-room'
@@ -102,7 +103,28 @@ function getBoardBounds(editor: Editor) {
     maxY: Math.max(...ys),
   }
 }
+function findPlacementNearSection(
+  editor: Editor,
+  keywords: string[],
+  fallbackX: number,
+  fallbackY: number
+) {
+  const shapes = editor.getCurrentPageShapes()
 
+  const match = shapes.find((shape) => {
+    const text = shapeText(shape).toLowerCase()
+    return keywords.some((keyword) => text.includes(keyword))
+  })
+
+  if (!match) {
+    return { x: fallbackX, y: fallbackY }
+  }
+
+  return {
+    x: match.x + 360,
+    y: match.y + 40,
+  }
+}
 function createSticky(
   editor: Editor,
   text: string,
@@ -443,8 +465,13 @@ function applySectionLayout(
     let rowHeight = 0
 
     rowSections.forEach((section, idx) => {
-      const x = startX + idx * (sectionWidth + sectionGapX)
-      const y = currentY
+      let x = startX + idx * (sectionWidth + sectionGapX)
+
+      if (section.kind === 'risk') {
+        x += 120
+      }
+      const y = section.kind === 'recommendation' ? currentY - 10 : currentY
+
 
       const titleId = createLabel(editor, section.title, x, y)
       helperShapeIds.push(titleId)
@@ -527,29 +554,43 @@ async function applyNonSectionAction(editor: Editor, action: AgentAction) {
   }
 
   if (action.type === 'generate_image') {
+    const placement = findPlacementNearSection(
+      editor,
+      ['product', 'visual', 'concept', 'recommendation'],
+      action.x,
+      action.y
+    )
+
     await requestGeneratedMedia(
       editor,
       'image',
       action.prompt,
-      action.x,
-      action.y,
+      placement.x,
+      placement.y,
       action.title
     )
     return
   }
 
   if (action.type === 'generate_video') {
+    const placement = findPlacementNearSection(
+      editor,
+      ['product', 'visual', 'concept', 'recommendation'],
+      action.x,
+      action.y
+    )
+
     await requestGeneratedMedia(
       editor,
       'video',
       action.prompt,
-      action.x,
-      action.y,
+      placement.x,
+      placement.y,
       action.title
     )
+    return
   }
 }
-
 async function applyAgentActions(
   editor: Editor,
   actions: AgentAction[],
@@ -637,7 +678,10 @@ function chooseAutonomousMode(
 
   return 'suggest_next'
 }
-
+function countRecentUserCreatedNotes(editor: Editor) {
+  const shapes = editor.getCurrentPageShapes()
+  return shapes.filter((shape) => shape.type === 'note').length
+}
 export default function Page() {
   const store = useSyncDemo({ roomId: ROOM_ID })
 
@@ -666,6 +710,10 @@ export default function Page() {
   const [conversationHistory, setConversationHistory] = useState<
     ConversationMessage[]
   >([])
+  const [sessionEvents, setSessionEvents] = useState<SessionEvent[]>([])
+  const [agentPresence, setAgentPresence] = useState('observing canvas')
+  const [sessionMessage, setSessionMessage] = useState('')
+  const [recentUserNoteBursts, setRecentUserNoteBursts] = useState<number[]>([])
   const [helperShapeIds, setHelperShapeIds] = useState<string[]>([])
   const [mediaKind, setMediaKind] = useState<'image' | 'video'>('image')
 
@@ -688,7 +736,38 @@ export default function Page() {
       },
     ])
   }
+  function sendSessionTextMessage() {
+    const text = sessionMessage.trim()
+    if (!text) return
 
+    pushConversation('user', text)
+    pushSessionEvent('user_text', 'user', text)
+    setSessionMessage('')
+  }
+
+  function commitVoiceToSession() {
+    const text = voiceText.trim()
+    if (!text) return
+
+    pushConversation('user', text)
+    pushSessionEvent('user_voice', 'user', text)
+  }
+    function pushSessionEvent(
+    kind: SessionEvent['kind'],
+    author: SessionEvent['author'],
+    text: string
+  ) {
+    setSessionEvents((prev) => [
+      ...prev.slice(-39),
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        kind,
+        author,
+        text,
+        timestamp: Date.now(),
+      },
+    ])
+  }
   function defaultMessageForMode(selectedMode: AgentMode) {
     if (selectedMode === 'generate') {
       return 'Generate useful brainstorming ideas for the current board.'
@@ -704,10 +783,14 @@ export default function Page() {
     }
     return 'Look at the board and conversation, then decide the most useful next action.'
   }
+  function setAgentPresenceState(text: string) {
+    setAgentPresence(text)
+    pushSessionEvent('agent_observation', 'agent', text)
+  }
 
   function statusForMode(selectedMode: AgentMode) {
     if (selectedMode === 'generate') return 'AI is adding a focused batch of ideas…'
-    if (selectedMode === 'cluster') return 'AI is cleaning and organizing the board…'
+    if (selectedMode === 'cluster') return 'AI is cleaning and organizing the board…' 
     if (selectedMode === 'visualize') return 'AI is preparing a visual concept…'
     if (selectedMode === 'critic') return 'AI is refining weak notes and surfacing gaps…'
     return 'AI is deciding the most useful next step…'
@@ -804,7 +887,14 @@ export default function Page() {
 
           const text = await transcribeAudioBlob(blob)
           setVoiceText(text)
-          setStatus(text ? 'Voice transcript ready.' : 'No speech detected.')
+
+          if (text) {
+            pushConversation('user', text)
+            pushSessionEvent('user_voice', 'user', text)
+            setStatus('Voice transcript added to session.')
+          } else {
+            setStatus('No speech detected.')
+          }
         } catch (error) {
           console.error(error)
           setStatus('Voice transcription failed.')
@@ -875,6 +965,24 @@ export default function Page() {
 
     const effectiveMode = customMode || mode
     const autonomous = options?.autonomous ?? false
+    if (autonomous) {
+      setAgentPresenceState('observing canvas and preparing a contextual contribution')
+    } else if (effectiveMode === 'cluster') {
+      setAgentPresenceState('noticed a cluster opportunity')
+    } else if (effectiveMode === 'visualize') {
+      setAgentPresenceState('preparing visual concept')
+    } else if (effectiveMode === 'critic') {
+      setAgentPresenceState('checking for risks and validation gaps')
+    } else if (effectiveMode === 'generate') {
+      setAgentPresenceState('adding 2 ideas')
+    } else {
+      setAgentPresenceState('observing canvas')
+    }
+    setStatus(
+      autonomous
+        ? 'AI noticed activity and is contributing on its own…'
+        : statusForMode(effectiveMode)
+    )
     const userText =
       options?.injectedMessage?.trim() ||
       buildEffectiveUserText(effectiveMode)
@@ -950,7 +1058,26 @@ export default function Page() {
 
       const canvas = summarizeBoard(editor)
       const convo = conversationFingerprint(conversationHistory)
+      const noteCount = countRecentUserCreatedNotes(editor)
 
+    const historyText = conversationHistory
+      .slice(-6)
+      .map((m) => m.text.toLowerCase())
+      .join(' ')
+
+    const hasVisualIntent =
+      historyText.includes('show') ||
+      historyText.includes('visual') ||
+      historyText.includes('mockup') ||
+      historyText.includes('image')
+
+    const hasConflictSignal =
+      historyText.includes('but') ||
+      historyText.includes('however') ||
+      historyText.includes('not sure') ||
+      historyText.includes('unclear') ||
+      historyText.includes('risk') ||
+      historyText.includes('validate')
       const canvasChanged = canvas !== lastCanvasFingerprintRef.current
       const convoChanged = convo !== lastConversationFingerprintRef.current
 
@@ -972,14 +1099,39 @@ export default function Page() {
         idleForMs > 8000 &&
         sinceLastRunMs > 20000
       ) {
-        const autoMode = chooseAutonomousMode(canvas, conversationHistory)
+        let autoMode = chooseAutonomousMode(canvas, conversationHistory)
+        let triggerReason = 'board_idle_after_change'
 
+        if (hasVisualIntent) {
+          autoMode = 'visualize'
+          triggerReason = 'visual_intent_detected'
+          setAgentPresenceState('preparing visual concept')
+        } else if (noteCount >= 5) {
+          autoMode = 'cluster'
+          triggerReason = 'note_density_cluster_opportunity'
+          setAgentPresenceState('noticed a cluster opportunity')
+        } else if (hasConflictSignal) {
+          autoMode = 'critic'
+          triggerReason = 'validation_gap_detected'
+          setAgentPresenceState('checking for risk or validation gap')
+        }
+        if (hasVisualIntent) {
+          setAgentPresenceState('preparing visual concept')
+        }
+
+        if (noteCount >= 5) {
+          setAgentPresenceState('noticed a cluster opportunity')
+        }
+
+        if (hasConflictSignal) {
+          setAgentPresenceState('checking for risk or validation gap')
+        }
         void runAgent(autoMode, {
           autonomous: true,
           silentUser: true,
           injectedMessage:
             'Inspect the current canvas and conversation. Contribute as an active teammate by making the single most useful improvement directly on the board.',
-          triggerReason: 'board_idle_after_change',
+          triggerReason,
         })
       }
     }, 2500)
@@ -1005,12 +1157,12 @@ export default function Page() {
       mediaKind === 'image'
         ? 'A futuristic collaborative whiteboard with sticky notes and soft studio lighting.'
         : 'Short clip: hands arranging sticky notes on a glass whiteboard, smooth camera pan.'
-
+    
     const text = buildEffectiveUserText(mode).trim() || fallback
     const vp = editor.getViewportPageBounds()
     const x = vp.x + vp.width / 2 - DEFAULT_MEDIA_W / 2
     const y = vp.y + vp.height / 2 - DEFAULT_MEDIA_H / 2
-
+    setAgentPresenceState('preparing visual concept')
     setLoading(true)
     setStatus(mediaKind === 'image' ? 'Generating image…' : 'Generating video…')
 
@@ -1105,16 +1257,39 @@ export default function Page() {
         <div style={{ fontSize: 12, color: '#555', marginBottom: 12 }}>
           Room: <strong>{ROOM_ID}</strong>
         </div>
-
-        <label style={labelStyle}>Instruction (optional)</label>
+        <div
+          style={{
+            fontSize: 12,
+            color: '#444',
+            marginBottom: 10,
+            padding: '8px 10px',
+            borderRadius: 10,
+            background: '#f8fafc',
+            border: '1px solid #e5e7eb',
+          }}
+        >
+          <strong>AI status:</strong> {agentPresence}
+        </div>
+        <label style={labelStyle}>Session message / agent prompt</label>
         <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          value={sessionMessage}
+          onChange={(e) => {
+            setSessionMessage(e.target.value)
+            setPrompt(e.target.value)
+          }}
           placeholder="Optional. Leave empty and let the agent infer the next helpful step."
           rows={4}
           style={textareaStyle}
         />
-
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <button
+            onClick={sendSessionTextMessage}
+            disabled={!sessionMessage.trim()}
+            style={buttonStyle('#111')}
+          >
+            Send to session
+          </button>
+        </div>
         <div
           style={{
             display: 'grid',
@@ -1341,12 +1516,12 @@ export default function Page() {
           }}
         >
           <div style={{ fontWeight: 700, marginBottom: 8 }}>
-            Conversation memory
+            Session conversation
           </div>
 
-          {conversationHistory.length === 0 ? (
+          {sessionEvents.length === 0 ? (
             <div style={{ fontSize: 13, color: '#666' }}>
-              No conversation yet.
+              No session messages yet.
             </div>
           ) : (
             <div
@@ -1354,20 +1529,19 @@ export default function Page() {
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 8,
-                maxHeight: 220,
+                maxHeight: 260,
                 overflow: 'auto',
               }}
             >
-              {conversationHistory.map((message, index) => (
+              {sessionEvents.map((event) => (
                 <div
-                  key={`${message.timestamp}-${index}`}
+                  key={event.id}
                   style={{
                     padding: 10,
                     borderRadius: 12,
-                    background:
-                      message.role === 'user' ? '#f3f4f6' : '#eefaf6',
+                    background: event.author === 'user' ? '#f3f4f6' : '#eefaf6',
                     border:
-                      message.role === 'user'
+                      event.author === 'user'
                         ? '1px solid #e5e7eb'
                         : '1px solid #ccefe2',
                   }}
@@ -1381,10 +1555,10 @@ export default function Page() {
                       marginBottom: 4,
                     }}
                   >
-                    {message.role} • {formatTime(message.timestamp)}
+                    {event.kind.replace('_', ' ')} • {formatTime(event.timestamp)}
                   </div>
                   <div style={{ fontSize: 13, lineHeight: 1.45 }}>
-                    {message.text}
+                    {event.text}
                   </div>
                 </div>
               ))}
@@ -1402,7 +1576,6 @@ export default function Page() {
     </div>
   )
 }
-
 const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: 12,
