@@ -592,6 +592,91 @@ async function applyNonSectionAction(editor: Editor, action: AgentAction) {
     )
     return
   }
+if (action.type === 'create_arrow_by_text') {
+  const from = findShapeByText(editor, action.fromText)
+  const to = findShapeByText(editor, action.toText)
+
+  if (!from || !to) {
+    createSticky(
+      editor,
+      `Arrow failed: text match not found (${action.fromText} → ${action.toText})`,
+      120,
+      120,
+      'red'
+    )
+    return
+  }
+
+  const fromBounds = editor.getShapePageBounds(from.id)
+  const toBounds = editor.getShapePageBounds(to.id)
+
+  if (!fromBounds || !toBounds) return
+
+  const startPoint = {
+    x: fromBounds.x + fromBounds.w / 2,
+    y: fromBounds.y + fromBounds.h / 2,
+  }
+
+  const endPoint = {
+    x: toBounds.x + toBounds.w / 2,
+    y: toBounds.y + toBounds.h / 2,
+  }
+
+  const arrowX = Math.min(startPoint.x, endPoint.x)
+  const arrowY = Math.min(startPoint.y, endPoint.y)
+
+  const arrowId = createShapeId()
+
+  editor.createShape({
+  id: arrowId,
+  type: 'arrow',
+  x: arrowX,
+  y: arrowY,
+  props: {
+    start: {
+      x: startPoint.x - arrowX,
+      y: startPoint.y - arrowY,
+    },
+    end: {
+      x: endPoint.x - arrowX,
+      y: endPoint.y - arrowY,
+    },
+  },
+} as any)
+
+  editor.createBindings([
+    {
+      fromId: arrowId,
+      toId: from.id,
+      type: 'arrow',
+      props: {
+        terminal: 'start',
+        normalizedAnchor: { x: 0.5, y: 0.5 },
+        isExact: false,
+        isPrecise: false,
+      },
+    } as any,
+    {
+      fromId: arrowId,
+      toId: to.id,
+      type: 'arrow',
+      props: {
+        terminal: 'end',
+        normalizedAnchor: { x: 0.5, y: 0.5 },
+        isExact: false,
+        isPrecise: false,
+      },
+    } as any,
+  ])
+
+  console.log('[create_arrow] success', {
+    fromId: from.id,
+    toId: to.id,
+    arrowId,
+  })
+
+  return
+}
 }
 
 async function applyAgentActions(
@@ -651,7 +736,12 @@ function conversationFingerprint(history: ConversationMessage[]) {
 
 function chooseAutonomousMode(
   canvasSummary: string,
-  conversationHistory: ConversationMessage[]
+  conversationHistory: ConversationMessage[],
+  options?: {
+    hasExistingSections?: boolean
+    unstructuredNoteCount?: number
+    clusterCooldownTurnsRemaining?: number
+  }
 ): AgentMode {
   const lower = canvasSummary.toLowerCase()
   const historyText = conversationHistory
@@ -659,20 +749,49 @@ function chooseAutonomousMode(
     .map((m) => m.text.toLowerCase())
     .join(' ')
 
-  const noteCount = canvasSummary === 'Board is empty.'
-    ? 0
-    : canvasSummary.split('\n').length
+  const noteCount =
+    canvasSummary === 'Board is empty.'
+      ? 0
+      : canvasSummary.split('\n').length
 
-  if (historyText.includes('visual') || historyText.includes('image') || historyText.includes('video')) {
+  if (
+    historyText.includes('visual') ||
+    historyText.includes('image') ||
+    historyText.includes('video') ||
+    historyText.includes('mockup')
+  ) {
     return 'visualize'
   }
 
-  if (noteCount >= 5) {
+  if (
+    lower.includes('risk') ||
+    lower.includes('validate') ||
+    historyText.includes('risk') ||
+    historyText.includes('validate') ||
+    historyText.includes('unclear')
+  ) {
+    return 'critic'
+  }
+
+  if (
+    noteCount >= 4 &&
+    options?.unstructuredNoteCount &&
+    options.unstructuredNoteCount <= 8 &&
+    options.hasExistingSections
+  ) {
+    return 'deepen'
+  }
+
+  if (
+    noteCount >= 6 &&
+    !options?.hasExistingSections &&
+    (options?.clusterCooldownTurnsRemaining || 0) === 0
+  ) {
     return 'cluster'
   }
 
-  if (lower.includes('risk') || lower.includes('metric') || lower.includes('validation')) {
-    return 'critic'
+  if (noteCount >= 3) {
+    return 'deepen'
   }
 
   if (noteCount === 0) {
@@ -681,9 +800,50 @@ function chooseAutonomousMode(
 
   return 'suggest_next'
 }
+ 
 function countRecentUserCreatedNotes(editor: Editor) {
   const shapes = editor.getCurrentPageShapes()
   return shapes.filter((shape) => shape.type === 'note').length
+}
+function detectExistingSections(editor: Editor) {
+  const shapes = editor.getCurrentPageShapes()
+
+  const sectionLikeShapes = shapes.filter((shape) => {
+    const text = shapeText(shape).toLowerCase()
+    if (!text) return false
+
+    return (
+      shape.type === 'text' &&
+      (
+        text.includes('idea') ||
+        text.includes('risk') ||
+        text.includes('channel') ||
+        text.includes('audience') ||
+        text.includes('problem') ||
+        text.includes('solution') ||
+        text.includes('metric') ||
+        text.includes('recommendation') ||
+        text.includes('validation') ||
+        text.includes('next step')
+      )
+    )
+  })
+
+  const titles = sectionLikeShapes
+    .map((shape) => shapeText(shape).trim())
+    .filter(Boolean)
+    .slice(0, 8)
+
+  return {
+    hasExistingSections: titles.length >= 2,
+    sectionTitles: titles,
+  }
+}
+
+function countUnstructuredNotes(editor: Editor) {
+  const shapes = editor.getCurrentPageShapes()
+  const noteCount = shapes.filter((shape) => shape.type === 'note').length
+  return noteCount
 }
 export default function Page() {
   //const store = useSyncDemo({ roomId: ROOM_ID })
@@ -726,7 +886,10 @@ export default function Page() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const mediaChunksRef = useRef<Blob[]>([])
-
+  const recentModeHistoryRef = useRef<AgentMode[]>([])
+  const clusterCooldownTurnsRef = useRef(0)
+  const recentAgentActionsRef = useRef<string[]>([])
+  
   const canRun = useMemo(
     () => !!editor && !loading && !paused && !isTranscribing,
     [editor, loading, paused, isTranscribing]
@@ -790,7 +953,11 @@ function sendSessionTextMessage() {
     if (selectedMode === 'critic') {
       return 'Refine weak notes and add one important validation or risk question.'
     }
+    if (selectedMode === 'deepen') {
+      return 'Deepen the most promising existing idea by making it more specific, actionable, or testable.'
+    }
     return 'Look at the board and conversation, then decide the most useful next action.'
+    
   }
   function setAgentPresenceState(text: string) {
     setAgentPresence(text)
@@ -802,6 +969,7 @@ function sendSessionTextMessage() {
     if (selectedMode === 'cluster') return 'AI is cleaning and organizing the board…' 
     if (selectedMode === 'visualize') return 'AI is preparing a visual concept…'
     if (selectedMode === 'critic') return 'AI is refining weak notes and surfacing gaps…'
+    if (selectedMode === 'deepen') return 'AI is developing the strongest idea further…'
     return 'AI is deciding the most useful next step…'
   }
 
@@ -975,18 +1143,20 @@ function sendSessionTextMessage() {
     const effectiveMode = customMode || mode
     const autonomous = options?.autonomous ?? false
     if (autonomous) {
-      setAgentPresenceState('observing canvas and preparing a contextual contribution')
-    } else if (effectiveMode === 'cluster') {
-      setAgentPresenceState('noticed a cluster opportunity')
-    } else if (effectiveMode === 'visualize') {
-      setAgentPresenceState('preparing visual concept')
-    } else if (effectiveMode === 'critic') {
-      setAgentPresenceState('checking for risks and validation gaps')
-    } else if (effectiveMode === 'generate') {
-      setAgentPresenceState('adding 2 ideas')
-    } else {
-      setAgentPresenceState('observing canvas')
-    }
+  setAgentPresenceState('observing canvas and preparing a contextual contribution')
+} else if (effectiveMode === 'cluster') {
+  setAgentPresenceState('noticed a cluster opportunity')
+} else if (effectiveMode === 'visualize') {
+  setAgentPresenceState('preparing visual concept')
+} else if (effectiveMode === 'critic') {
+  setAgentPresenceState('checking for risks and validation gaps')
+} else if (effectiveMode === 'generate') {
+  setAgentPresenceState('adding 2 ideas')
+} else if (effectiveMode === 'deepen') {
+  setAgentPresenceState('developing the strongest idea further')
+} else {
+  setAgentPresenceState('observing canvas')
+}
     setStatus(
       autonomous
         ? 'AI noticed activity and is contributing on its own…'
@@ -1009,7 +1179,10 @@ function sendSessionTextMessage() {
 
     try {
       const canvasSummary = summarizeBoard(editor)
-
+      const { hasExistingSections, sectionTitles } = detectExistingSections(editor)
+      const unstructuredNoteCount = countUnstructuredNotes(editor)
+      const recentModeHistory = recentModeHistoryRef.current
+      const recentAgentActions = recentAgentActionsRef.current
       const outgoingConversation = options?.silentUser
         ? conversationHistory.slice(-19)
         : [
@@ -1028,7 +1201,14 @@ function sendSessionTextMessage() {
           persona,
           contributionLevel,
           autonomous,
-          triggerReason: options?.triggerReason || (autonomous ? 'idle_board_change' : 'manual'),
+          hasExistingSections,
+          sectionTitles,
+          recentAgentActions,
+          recentModeHistory,
+          unstructuredNoteCount,
+          clusterCooldownTurnsRemaining: clusterCooldownTurnsRef.current,
+          triggerReason:
+            options?.triggerReason || (autonomous ? 'idle_board_change' : 'manual'),
         }),
       })
 
@@ -1046,7 +1226,21 @@ function sendSessionTextMessage() {
         helperShapeIds
       )
       setHelperShapeIds(nextHelperIds)
+      recentModeHistoryRef.current = [
+        ...recentModeHistoryRef.current.slice(-4),
+        effectiveMode,
+      ]
 
+      recentAgentActionsRef.current = [
+        ...recentAgentActionsRef.current.slice(-9),
+        ...data.actions.map((action) => action.type),
+      ]
+
+      if (effectiveMode === 'cluster') {
+        clusterCooldownTurnsRef.current = 2
+      } else if (clusterCooldownTurnsRef.current > 0) {
+        clusterCooldownTurnsRef.current -= 1
+      }
       setStatus(data.summary || 'Done')
       pushConversation('agent', data.summary || 'Agent acted on the board.')
       lastAgentRunAtRef.current = Date.now()
@@ -1108,33 +1302,44 @@ function sendSessionTextMessage() {
         idleForMs > 8000 &&
         sinceLastRunMs > 20000
       ) {
-        let autoMode = chooseAutonomousMode(canvas, conversationHistory)
-        let triggerReason = 'board_idle_after_change'
+        const { hasExistingSections } = detectExistingSections(editor)
+        const unstructuredNoteCount = countUnstructuredNotes(editor)
+        let autoMode = chooseAutonomousMode(canvas, conversationHistory, {
+        hasExistingSections,
+        unstructuredNoteCount,
+        clusterCooldownTurnsRemaining: clusterCooldownTurnsRef.current,
+      })
+      let triggerReason = 'board_idle_after_change'
 
-        if (hasVisualIntent) {
-          autoMode = 'visualize'
-          triggerReason = 'visual_intent_detected'
-          setAgentPresenceState('preparing visual concept')
-        } else if (noteCount >= 5) {
-          autoMode = 'cluster'
-          triggerReason = 'note_density_cluster_opportunity'
-          setAgentPresenceState('noticed a cluster opportunity')
-        } else if (hasConflictSignal) {
-          autoMode = 'critic'
-          triggerReason = 'validation_gap_detected'
-          setAgentPresenceState('checking for risk or validation gap')
-        }
-        if (hasVisualIntent) {
-          setAgentPresenceState('preparing visual concept')
-        }
+      if (hasVisualIntent) {
+        autoMode = 'visualize'
+        triggerReason = 'visual_intent_detected'
+        setAgentPresenceState('preparing visual concept')
+      } else if (hasConflictSignal) {
+        autoMode = 'critic'
+        triggerReason = 'validation_gap_detected'
+        setAgentPresenceState('checking for risk or validation gap')
+      } else if (
+        noteCount >= 6 &&
+        !hasExistingSections &&
+        clusterCooldownTurnsRef.current === 0
+      ) {
+        autoMode = 'cluster'
+        triggerReason = 'note_density_cluster_opportunity'
+        setAgentPresenceState('noticed a cluster opportunity')
+      } else if (noteCount >= 3) {
+        autoMode = 'deepen'
+        triggerReason = 'promising_idea_needs_deepening'
+        setAgentPresenceState('developing a promising direction')
+      }
 
-        if (noteCount >= 5) {
-          setAgentPresenceState('noticed a cluster opportunity')
-        }
-
-        if (hasConflictSignal) {
-          setAgentPresenceState('checking for risk or validation gap')
-        }
+      void runAgent(autoMode, {
+        autonomous: true,
+        silentUser: true,
+        injectedMessage:
+          'Inspect the current canvas and conversation. Contribute as an active teammate by making the single most useful improvement directly on the board.',
+        triggerReason,
+      })
         void runAgent(autoMode, {
           autonomous: true,
           silentUser: true,
@@ -1537,6 +1742,7 @@ return (
               <option value="generate">Generate</option>
               <option value="cluster">Cluster</option>
               <option value="visualize">Visualize</option>
+              <option value="deepen">Deepen</option>
               <option value="critic">Critic</option>
             </select>
           </div>
@@ -1762,6 +1968,31 @@ function buttonStyle(background: string): React.CSSProperties {
     cursor: 'pointer',
     fontWeight: 600,
   }
+}
+function findShapeByText(editor: Editor, query: string) {
+  const normalizedQuery = query.toLowerCase().trim()
+  if (!normalizedQuery) return null
+
+  const shapes = editor.getCurrentPageShapes()
+
+  const candidates = shapes.filter((shape) => {
+    const text = shapeText(shape).toLowerCase().trim()
+    return text && (
+      text === normalizedQuery ||
+      text.includes(normalizedQuery) ||
+      normalizedQuery.includes(text)
+    )
+  })
+
+  if (!candidates.length) return null
+
+  candidates.sort((a, b) => {
+    const aText = shapeText(a)
+    const bText = shapeText(b)
+    return aText.length - bText.length
+  })
+
+  return candidates[0]
 }
 function miniButtonStyle(background: string): React.CSSProperties {
   return {

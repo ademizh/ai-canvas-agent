@@ -1,9 +1,10 @@
 export type AgentMode =
-  | 'suggest_next'
   | 'generate'
   | 'cluster'
-  | 'visualize'
   | 'critic'
+  | 'suggest_next'
+  | 'visualize'
+  | 'deepen'
 
 export type AgentPersona = 'facilitator' | 'creative' | 'critic'
 
@@ -83,7 +84,12 @@ export type AgentAction =
       y: number
       title?: string
     }
-
+   | {
+        type: 'create_arrow_by_text'
+        fromText: string
+        toText: string
+        text?: string
+      }
 export interface AgentRequestBody {
   userMessage: string
   mode: AgentMode
@@ -93,6 +99,12 @@ export interface AgentRequestBody {
   contributionLevel?: ContributionLevel
   autonomous?: boolean
   triggerReason?: string
+  hasExistingSections?: boolean
+  sectionTitles?: string[]
+  recentAgentActions?: string[]
+  recentModeHistory?: string[]
+  unstructuredNoteCount?: number
+  clusterCooldownTurnsRemaining?: number
 }
 
 export interface AgentResponseBody {
