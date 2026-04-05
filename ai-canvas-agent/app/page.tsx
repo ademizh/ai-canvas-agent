@@ -2,6 +2,7 @@
 
 import 'tldraw/tldraw.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMutation, useStorage } from '@liveblocks/react/suspense'
 import {
   AssetRecordType,
   createShapeId,
@@ -22,6 +23,10 @@ import type {
   SectionKind,
   SessionEvent,
 } from '@/lib/agent-types'
+
+// import { RoomProvider } from "@/lib/liveblocks";
+import { Room } from './Room'
+import { StorageTldraw } from './StorageTldraw'
 
 // const ROOM_ID = process.env.NEXT_PUBLIC_ROOM_ID || 'hacknu-ai-agent-room'
 
@@ -845,7 +850,7 @@ function countUnstructuredNotes(editor: Editor) {
   const noteCount = shapes.filter((shape) => shape.type === 'note').length
   return noteCount
 }
-export default function Page() {
+function CanvasPage() {
   //const store = useSyncDemo({ roomId: ROOM_ID })
   const licenseKey = process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY
   const [autonomousEnabled, setAutonomousEnabled] = useState(false)
@@ -872,11 +877,13 @@ export default function Page() {
     useState<ContributionLevel>('medium')
   const [mode, setMode] = useState<AgentMode>('suggest_next')
 
-  const [conversationHistory, setConversationHistory] = useState<
-    ConversationMessage[]
-  >([])
+  const conversationHistory = (useStorage(
+    (root) => root.conversationHistory
+  ) ?? []) as ConversationMessage[]
   const [sessionMessage, setSessionMessage] = useState('')
-  const [sessionEvents, setSessionEvents] = useState<SessionEvent[]>([])
+  const sessionEvents = (useStorage(
+    (root) => root.sessionEvents
+  ) ?? []) as SessionEvent[]
   const [agentPresence, setAgentPresence] = useState('observing canvas')
   
   const [recentUserNoteBursts, setRecentUserNoteBursts] = useState<number[]>([])
@@ -895,32 +902,46 @@ export default function Page() {
     [editor, loading, paused, isTranscribing]
   )
 
-  function pushConversation(role: 'user' | 'agent', text: string) {
-    setConversationHistory((prev) => [
-      ...prev.slice(-19),
-      {
+  const pushConversation = useMutation(
+    ({ storage }, role: 'user' | 'agent', text: string) => {
+      const list = storage.get('conversationHistory')
+
+      list.push({
         role,
         text,
         timestamp: Date.now(),
-      },
-    ])
-  }
-  function pushSessionEvent(
-  kind: SessionEvent['kind'],
-  author: SessionEvent['author'],
-  text: string
-) {
-  setSessionEvents((prev) => [
-    ...prev.slice(-39),
-    {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      kind,
-      author,
-      text,
-      timestamp: Date.now(),
+      })
+
+      while (list.length > 20) {
+        list.delete(0)
+      }
     },
-  ])
-}
+    []
+  )
+
+  const pushSessionEvent = useMutation(
+    (
+      { storage },
+      kind: SessionEvent['kind'],
+      author: SessionEvent['author'],
+      text: string
+    ) => {
+      const list = storage.get('sessionEvents')
+
+      list.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        kind,
+        author,
+        text,
+        timestamp: Date.now(),
+      })
+
+      while (list.length > 40) {
+        list.delete(0)
+      }
+    },
+    []
+  )
 
 function sendSessionTextMessage() {
   const text = sessionMessage.trim()
@@ -1482,9 +1503,18 @@ async function animateSelectedImageOnCanvas() {
     setStatus('Added starter notes.')
   }
 
-  function clearConversation() {
-    setConversationHistory([])
-  }
+  const clearConversation = useMutation(({ storage }) => {
+    const conversation = storage.get('conversationHistory')
+    const events = storage.get('sessionEvents')
+
+    while (conversation.length > 0) {
+      conversation.delete(0)
+    }
+
+    while (events.length > 0) {
+      events.delete(0)
+    }
+  }, [])
 return (
   <div style={{ position: 'fixed', inset: 0 }}>
     {showSessionPanel && (
@@ -1924,9 +1954,8 @@ return (
       )}
     </div>
 
-    <Tldraw
+    <StorageTldraw
       licenseKey={licenseKey}
-      persistenceKey="ai-canvas-agent"
       onMount={(editorInstance) => {
         setEditor(editorInstance)
       }}
@@ -2081,4 +2110,12 @@ function normalizeTldrawColor(
   if (value === 'gray') return 'grey'
 
   return 'yellow'
+}
+
+export default function Page() {
+  return (
+    <Room>
+      <CanvasPage />
+    </Room>
+  )
 }

@@ -10,6 +10,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
+    "@liveblocks/client": "^3.17.0",
+    "@liveblocks/node": "^3.17.0",
+    "@liveblocks/react": "^3.17.0",
     "@tldraw/sync": "^4.5.7",
     "next": "16.2.2",
     "openai": "^6.33.0",
