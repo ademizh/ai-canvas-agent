@@ -1,7 +1,6 @@
 # AI Brainstorm Canvas
 
-AI Brainstorm Canvas - это коллаборативная онлайн-доска, где **2+ пользователя и AI-агент** участвуют в совместной brainstorming-сессии в одном пространстве.  
-В отличие от обычного сценария, где AI открыт в отдельной вкладке и не видит, что происходит на доске, здесь агент **работает внутри canvas**: понимает контекст сессии, анализирует содержимое рабочего пространства и вносит вклад прямо на доске.
+AI Brainstorm Canvas Agent — LLM-powered collaborative canvas tool, где AI-агент участвует в brainstorming-сессии прямо внутри доски: анализирует контекст canvas, понимает ход обсуждения, взаимодействует через text/voice input и выполняет tool-like действия с элементами доски. Реализовала интеграцию OpenAI API, prompt engineering, real-time collaboration через Liveblocks и canvas-интерфейс на Next.js, React, TypeScript и tldraw.
 ## Демо видео
 **Ссылка на видео демонстрацию**: https://drive.google.com/drive/folders/15S510AYm0paTvxWdQexqjZMkreAVEvvI?usp=sharing
 
